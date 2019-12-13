@@ -107,9 +107,6 @@ class Blackrock(_BaseDAQ):
             else:
                 # TODO
                 pass
-        for sample in range(self.samples_per_read):
-            for channel in range(len(self.channels)):
-                data[channel, sample] = self.queue_[channel].get()
 
         return data
 
