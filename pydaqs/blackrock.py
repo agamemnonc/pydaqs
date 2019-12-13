@@ -75,11 +75,15 @@ class Blackrock(_BaseDAQ):
     def fetch(self):
         while self.running_:
             result, trial = cbpy.trial_continuous(reset=True)
+            cur_data = []
             for channel_number, channel_data in trial:
                 if channel_number in self.channels:
-                    ind = self.channels.index(channel_number)
-                    for sample in channel_data:
-                        self.queue_[ind].put(sample)
+                    cur_data.append(channel_data)
+
+            self.queue.put(np.array(cur_data))
+                    # ind = self.channels.index(channel_number)
+                    # for sample in channel_data:
+                    #     self.queue_[ind].put(sample)
 
     def read(self):
         """
@@ -94,7 +98,15 @@ class Blackrock(_BaseDAQ):
             Data read from the device. Each channel is a row and each column
             is a point in time.
         """
-        data = np.zeros((len(self.channels), self.samples_per_read))
+        data = np.zeros((len(self.channels), 0))
+        while data.shape[1] < self.samples_per_read:
+            n_missing_samples = self.samples_per_read - data.shape[1]
+            new_data = self.queue_.get()
+            if new_data.shape[1] <= n_missing_samples:
+                data = np.append(data, new_data)
+            else:
+                # TODO
+                pass
         for sample in range(self.samples_per_read):
             for channel in range(len(self.channels)):
                 data[channel, sample] = self.queue_[channel].get()
