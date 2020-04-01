@@ -1,10 +1,10 @@
-import numpy as np
-from serial.tools import list_ports
-from pyfirmata import Arduino
-import threading
-from serial import SerialException
+from threading import Thread
 import time
 
+import numpy as np
+from serial import SerialException
+from serial.tools import list_ports
+from pyfirmata import Arduino
 from axopy.daq import _Sleeper
 
 from .base import _BaseDAQ
@@ -42,9 +42,6 @@ class ArduinoDAQ(_BaseDAQ):
     ----------
     board : arduino
         Arduino instance.
-    iterator : iterator
-        Arduino iterator that constantly pulls data from serial port
-        on a different thread (i.e., asynchronously).
     sleeper : sleeper
         Sleeper instance required to implement the desired sampling rate.
     """
@@ -74,7 +71,6 @@ class ArduinoDAQ(_BaseDAQ):
         self.pins_ = self.pins if self.zero_based else \
             list(map(lambda x: x-1, self.pins))
         self.board = Arduino(self.port, baudrate=self.baudrate)
-        self.iterator = Iterator(self.board)
         for pin in self.pins_:
             self.board.analog[pin].enable_reporting()
 
@@ -97,11 +93,39 @@ class ArduinoDAQ(_BaseDAQ):
             return device
 
     def start(self):
-        self.running_ = True
-        self.iterator.start()
+        if not self.board.sp.is_open:
+            self.board.sp.open()
+
+        self._flag = True
+        self._thread = Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while self._flag:
+            try:
+                while self.board.bytes_available():
+                    self.board.iterate()
+                # 6 analog inputs X 10 bits/input
+                time.sleep(1/(self.baudrate/60))
+            except (AttributeError, TypeError, SerialException, OSError):
+                # this way we can kill the thread by setting the board object
+                # to None, or when the serial port is closed by board.exit()
+                break
+            except Exception as e:
+                # catch 'error: Bad file descriptor'
+                # iterate may be called while the serial port is being closed,
+                # causing an "error: (9, 'Bad file descriptor')"
+                if getattr(e, "errno", None) == 9:
+                    break
+                try:
+                    if e[0] == 9:
+                        break
+                except (IndexError):
+                    pass
+                raise
 
     def stop(self):
-        self.running_ = False
+        self._flag = False
         self.board.exit()
 
     def read(self):
@@ -120,7 +144,7 @@ class ArduinoDAQ(_BaseDAQ):
             Data read from the device. Each pin is a row and each column
             is a point in time.
         """
-        if self.running_:
+        if self._flag:
             self.sleeper.sleep()
             data = np.zeros((len(self.pins_), self.samples_per_read))
             for i in range(self.samples_per_read):
@@ -128,38 +152,5 @@ class ArduinoDAQ(_BaseDAQ):
                     data[j, i] = self.board.analog[pin].read()
 
             return data
-
         else:
             raise SerialException("Serial port is closed.")
-
-class Iterator(threading.Thread):
-
-    def __init__(self, board):
-        super(Iterator, self).__init__()
-        self.board = board
-        self.daemon = True
-
-    def run(self):
-        while 1:
-            try:
-                while self.board.bytes_available():
-                    self.board.iterate()
-                time.sleep(0.001)
-            except (AttributeError, TypeError, SerialException, OSError):
-                # this way we can kill the thread by setting the board object
-                # to None, or when the serial port is closed by board.exit()
-                break
-            except Exception as e:
-                # catch 'error: Bad file descriptor'
-                # iterate may be called while the serial port is being closed,
-                # causing an "error: (9, 'Bad file descriptor')"
-                if getattr(e, "errno", None) == 9:
-                    break
-                try:
-                    if e[0] == 9:
-                        break
-                except (IndexError):
-                    pass
-                raise
-            except (KeyboardInterrupt):
-                sys.exit()
