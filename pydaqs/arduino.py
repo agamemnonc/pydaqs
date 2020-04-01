@@ -1,7 +1,9 @@
 import numpy as np
 from serial.tools import list_ports
 from pyfirmata import Arduino
-from pyfirmata import util
+import threading
+from serial import SerialException
+import time
 
 from axopy.daq import _Sleeper
 
@@ -72,7 +74,7 @@ class ArduinoDAQ(_BaseDAQ):
         self.pins_ = self.pins if self.zero_based else \
             list(map(lambda x: x-1, self.pins))
         self.board = Arduino(self.port, baudrate=self.baudrate)
-        self.iterator = util.Iterator(self.board)
+        self.iterator = Iterator(self.board)
         self.iterator.start()
         for pin in self.pins_:
             self.board.analog[pin].enable_reporting()
@@ -99,7 +101,8 @@ class ArduinoDAQ(_BaseDAQ):
         pass
 
     def stop(self):
-        pass
+        # pass
+        self.board.exit()
 
     def read(self):
         """
@@ -124,3 +127,35 @@ class ArduinoDAQ(_BaseDAQ):
                 data[j, i] = self.board.analog[pin].read()
 
         return data
+
+class Iterator(threading.Thread):
+
+    def __init__(self, board):
+        super(Iterator, self).__init__()
+        self.board = board
+        self.daemon = True
+
+    def run(self):
+        while 1:
+            try:
+                while self.board.bytes_available():
+                    self.board.iterate()
+                time.sleep(0.001)
+            except (AttributeError, SerialException, OSError):
+                # this way we can kill the thread by setting the board object
+                # to None, or when the serial port is closed by board.exit()
+                break
+            except Exception as e:
+                # catch 'error: Bad file descriptor'
+                # iterate may be called while the serial port is being closed,
+                # causing an "error: (9, 'Bad file descriptor')"
+                if getattr(e, "errno", None) == 9:
+                    break
+                try:
+                    if e[0] == 9:
+                        break
+                except (TypeError, IndexError):
+                    break
+                raise
+            except (KeyboardInterrupt):
+                sys.exit()
