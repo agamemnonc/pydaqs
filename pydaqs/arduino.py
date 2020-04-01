@@ -75,7 +75,6 @@ class ArduinoDAQ(_BaseDAQ):
             list(map(lambda x: x-1, self.pins))
         self.board = Arduino(self.port, baudrate=self.baudrate)
         self.iterator = Iterator(self.board)
-        self.iterator.start()
         for pin in self.pins_:
             self.board.analog[pin].enable_reporting()
 
@@ -98,10 +97,11 @@ class ArduinoDAQ(_BaseDAQ):
             return device
 
     def start(self):
-        pass
+        self.running_ = True
+        self.iterator.start()
 
     def stop(self):
-        # pass
+        self.running_ = False
         self.board.exit()
 
     def read(self):
@@ -120,13 +120,17 @@ class ArduinoDAQ(_BaseDAQ):
             Data read from the device. Each pin is a row and each column
             is a point in time.
         """
-        self.sleeper.sleep()
-        data = np.zeros((len(self.pins_), self.samples_per_read))
-        for i in range(self.samples_per_read):
-            for j, pin in enumerate(self.pins_):
-                data[j, i] = self.board.analog[pin].read()
+        if self.running_:
+            self.sleeper.sleep()
+            data = np.zeros((len(self.pins_), self.samples_per_read))
+            for i in range(self.samples_per_read):
+                for j, pin in enumerate(self.pins_):
+                    data[j, i] = self.board.analog[pin].read()
 
-        return data
+            return data
+
+        else:
+            raise SerialException("Serial port is closed.")
 
 class Iterator(threading.Thread):
 
@@ -141,7 +145,7 @@ class Iterator(threading.Thread):
                 while self.board.bytes_available():
                     self.board.iterate()
                 time.sleep(0.001)
-            except (AttributeError, SerialException, OSError):
+            except (AttributeError, TypeError, SerialException, OSError):
                 # this way we can kill the thread by setting the board object
                 # to None, or when the serial port is closed by board.exit()
                 break
@@ -154,8 +158,8 @@ class Iterator(threading.Thread):
                 try:
                     if e[0] == 9:
                         break
-                except (TypeError, IndexError):
-                    break
+                except (IndexError):
+                    pass
                 raise
             except (KeyboardInterrupt):
                 sys.exit()
