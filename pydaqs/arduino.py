@@ -1,31 +1,83 @@
-import time
-
 import numpy as np
-import serial
 from serial.tools import list_ports
+from pyfirmata import Arduino
+from pyfirmata import util
+
+from axopy.daq import _Sleeper
 
 from .base import _BaseDAQ
 
 
 class ArduinoDAQ(_BaseDAQ):
-    def __init__(self, s_port, baud_rate, n_channels, samples_per_read):
+    """
+    Arduino DAQ stream reader device for analog inputs.
 
-        # If port is not given use the first one available
-        if s_port is None:
-            s_port = self.get_arduino_port()
+    Requires Firmata firmware to be uploaded on the Arduino. Has been tested
+    with ``SimpleAnalogFirmata`` and ``StandardFirmata``, both of them provided
+    as examples in the Arduino IDE.
 
-        self.s_port = s_port
-        self.baud_rate = baud_rate
-        self.n_channels = n_channels
+    Parameters
+    ----------
+    rate : float
+        Sampling rate. Maximum allowed with the default serial parameter
+        configuration  is around 1 kHz. Higher values are allowed, but
+        will result in oversampling.
+    pins : list of integers
+        Analog pins to read data from.
+    samples_per_read : int
+        Number of samples to read in each read operation.
+    port : str, optional (default: None)
+        Serial port name (e.g., 'COM1' in Windows). If not provided, it will be
+        inferred.
+    baudrate : int, optional (default: 57600)
+        Serial communication baud rate. If a non-default value is provided,
+        the baud rate needs also to be updated in the arduino firmwire file.
+    zero_based : bool, optional
+        If ``True``, 0-based indexing is used for pin numbering. Default is
+        ``True``.
+
+    Attributes
+    ----------
+    board : arduino
+        Arduino instance.
+    iterator : iterator
+        Arduino iterator that constantly pulls data from serial port
+        on a different thread (i.e., asynchronously).
+    sleeper : sleeper
+        Sleeper instance required to implement the desired sampling rate.
+    """
+
+    def __init__(self,
+                 rate,
+                 pins,
+                 samples_per_read,
+                 port=None,
+                 baudrate=57600,
+                 zero_based=True):
+
+        # If port is not given find the Arduino one
+        if port is None:
+            port = self.get_arduino_port()
+
+        self.rate = rate
+        self.pins = pins
         self.samples_per_read = samples_per_read
+        self.port = port
+        self.baudrate = baudrate
+        self.zero_based = zero_based
 
         self._init()
 
     def _init(self):
-        self.si = serial.Serial(port=self.s_port, baudrate=self.baud_rate,
-                                timeout=1, writeTimeout=1)
-        self.si.flushOutput()
-        self.si.flushInput()
+        self.pins_ = self.pins if self.zero_based else \
+            list(map(lambda x: x-1, self.pins))
+        self.board = Arduino(self.port, baudrate=self.baudrate)
+        self.iterator = util.Iterator(self.board)
+        self.iterator.start()
+        for pin in self.pins_:
+            self.board.analog[pin].enable_reporting()
+
+        self.sleeper = _Sleeper(self.samples_per_read/self.rate)
 
     def __del__(self):
         """Call stop() on destruct."""
@@ -44,42 +96,31 @@ class ArduinoDAQ(_BaseDAQ):
             return device
 
     def start(self):
-        """Open port and flush input/output."""
-        if not self.si.is_open:
-            self.si.open()
-            self.si.flushOutput()
-            self.si.flushInput()
+        pass
 
     def stop(self):
-        """Flush input/output and close port."""
-        if self.si.is_open:
-            self.si.flushInput()
-            self.si.flushOutput()
-            self.si.close()
-
+        pass
 
     def read(self):
         """
         Request a sample of data from the device.
 
-        This is a blocking method, meaning it returns only once the requested
-        number of samples are available. The device does not support reading
-        more than one samples at a time so this is implemented in a for loop.
+        This method blocks (calls ``time.sleep()``) to emulate other data
+        acquisition units which wait for the requested number of samples to be
+        read. The amount of time to block is calculated such that consecutive
+        calls will always return with constant frequency, assuming the calls
+        occur faster than required (i.e. processing doesn't fall behind).
 
         Returns
         -------
-        data : ndarray, shape=(n_df, samples_per_read)
-            Data read from the device. Each sensor is a row and each column
+        data : ndarray, shape=(n_pins, samples_per_read)
+            Data read from the device. Each pin is a row and each column
             is a point in time.
         """
-        # self.si.flushInput()
-        data = np.zeros((self.n_channels, self.samples_per_read))
+        self.sleeper.sleep()
+        data = np.zeros((len(self.pins_), self.samples_per_read))
         for i in range(self.samples_per_read):
-            for channel in range(self.n_channels):
-                cur_data = self.si.readline()
-                try:
-                    data[channel, i] = cur_data.decode()
-                except:
-                    print(cur_data)
+            for j, pin in enumerate(self.pins_):
+                data[j, i] = self.board.analog[pin].read()
 
         return data
