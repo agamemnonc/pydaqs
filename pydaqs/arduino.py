@@ -76,7 +76,10 @@ class ArduinoDAQ(_BaseDAQ):
         data = np.zeros((self.n_channels, self.samples_per_read))
         for i in range(self.samples_per_read):
             for channel in range(self.n_channels):
-                value = float(self.si.readline())
-                data[channel, i] = value
+                cur_data = self.si.readline()
+                try:
+                    data[channel, i] = cur_data.decode()
+                except:
+                    print(cur_data)
 
         return data
